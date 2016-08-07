@@ -465,6 +465,7 @@ int __fastcall BranchGetPrevInstructionType(DWORD fromAdr, DWORD* jmpAdr, PLoopI
     Disasm.Disassemble(Pos2Adr(_pos), &_disInfo, 0);
     if (_disInfo.Branch)
     {
+        if (IsExit(_disInfo.Immediate)) return 0;
         if (_disInfo.Conditional)
         {
             if (_disInfo.Immediate > CodeBase + _pos)
@@ -474,7 +475,6 @@ int __fastcall BranchGetPrevInstructionType(DWORD fromAdr, DWORD* jmpAdr, PLoopI
             }
             return 2;
         }
-        //if (IsExit(_disInfo.Immediate)) return 0;
         if (_disInfo.Immediate > CodeBase + _pos)
         {
             *jmpAdr = _disInfo.Immediate;
@@ -1026,30 +1026,44 @@ bool __fastcall IsInheritsByProcName(const String& Name1, const String& Name2)
 //---------------------------------------------------------------------------
 String __fastcall TransformString(char* str, int len)
 {
-    bool        z = false;
-    char        c, *p = str;
-    String      res;
+    bool        s = true;//true - print string, false - print #XX
+    BYTE        c, *p = str;
+    String      res = "";
 
     for (int k = 0; k < len; k++)
     {
         c = *p; p++;
-        if (c >= 0 && c <= 13)
+        if (!(c & 0x80) && c <= 13)
         {
-            if (!z && k) res += "'";
+            if (s)
+            {
+                if (k) res += "'+";
+            }
+            else
+                res += "+";
             res += "#" + String((int)c);
-            z = true;
+            s = false;
         }
         else
-            z = false;
-        if (!k & !z) res += "'";
+        {
+            if (s)
+            {
+                if (!k) res += "'";
+            }
+            else
+                res += "+";
+            s = true;
+        }
         if (c == 0x22)
             res += "\"";
+        else if (c == 0x27)
+            res += "'";
         else if (c == 0x5C)
             res += "\\";
         else if (c > 13)
-            res += c;
+            res += (char)c;
     }
-    if (!z) res += "'";
+    if (s) res += "'";
     return res;
 }
 //---------------------------------------------------------------------------
