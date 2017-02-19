@@ -376,13 +376,21 @@ void __fastcall TFEditFunctionDlg_11011981::bApplyVarClick(TObject *Sender)
         edtVarSize->SetFocus();
         return;
     }
+
+    //Insert by ZGL
+    PInfoRec recN = GetInfoRec(Adr);
+    PLOCALINFO locInfo = PLOCALINFO(recN->procInfo->locals->Items[lbVars->ItemIndex]);
+    ////////////
+    
     item = edtVarName->Text;
+    locInfo->Name = item;  //ZGL add
     if (item != "")
         line += item;
     else
         line += "?";
     line += ":";
     item = edtVarType->Text;
+    locInfo->TypeDef = item;  //ZGL add
     if (item != "")
         line += item;
     else

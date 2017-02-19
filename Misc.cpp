@@ -169,6 +169,9 @@ void __fastcall FillArgInfo(int k, BYTE callkind, PARGINFO argInfo, BYTE** p, in
     BYTE* pp = *p; int ss = *s;
     argInfo->Tag = *pp; pp++;
     int locflags = *((int*)pp); pp += 4;
+
+    if ((locflags & 7) == 1) argInfo->Tag = 0x23; //Add by ZGL
+    
     argInfo->Register = (locflags & 8);
     int ndx = *((int*)pp); pp += 4;
 
@@ -837,6 +840,17 @@ String __fastcall GetDecompilerRegisterName(int Idx)
     return UpperCase(Reg32Tab[Idx]);
 }
 //---------------------------------------------------------------------------
+bool __fastcall IsValidModuleName(int len, int pos)
+{
+    if (!len) return false;
+    for (int i = pos; i < pos + len; i++)
+    {
+        BYTE b = *(Code + i);
+        if (b < ' ' || b == ':' || (b & 0x80)) return false;
+    }
+    return true;
+}
+//---------------------------------------------------------------------------
 bool __fastcall IsValidName(int len, int pos)
 {
     if (!len) return false;
@@ -1166,7 +1180,7 @@ String __fastcall GetDynaInfo(DWORD adr, WORD id, DWORD* dynAdr)
     while (classAdr)
     {
     	recN = GetInfoRec(classAdr);
-        if (recN && recN->vmtInfo->methods)
+        if (recN && recN->vmtInfo && recN->vmtInfo->methods)
         {
         	for (m = 0; m < recN->vmtInfo->methods->Count; m++)
             {
@@ -2967,6 +2981,7 @@ int __fastcall FloatNameToFloatType(String AName)
     if (SameText(AName, "Extended")) return FT_EXTENDED;
     if (SameText(AName, "Real")) return FT_REAL;
     if (SameText(AName, "Comp")) return FT_COMP;
+    if (SameText(AName, "Currency")) return FT_CURRENCY;
     return -1;
 }
 //---------------------------------------------------------------------------

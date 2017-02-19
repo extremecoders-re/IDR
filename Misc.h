@@ -10,6 +10,7 @@
 #define     FT_EXTENDED     3
 #define     FT_REAL         4
 #define     FT_COMP         5
+#define     FT_CURRENCY     6
 //---------------------------------------------------------------------------
 //global API
 void __fastcall ScaleForm(TForm* AForm);
@@ -101,6 +102,7 @@ bool __fastcall IsSameRegister(int Idx1, int Idx2);
 bool __fastcall IsValidCodeAdr(DWORD Adr);
 bool __fastcall IsValidCString(int pos);
 bool __fastcall IsValidImageAdr(DWORD Adr);
+bool __fastcall IsValidModuleName(int len, int pos);
 bool __fastcall IsValidName(int len, int pos);
 bool __fastcall IsValidString(int len, int pos);
 bool __fastcall IsXorMayBeSkipped(DWORD fromAdr);

@@ -11,6 +11,7 @@
 #include "Main.h"
 #include "Misc.h"
 #include "Threads.h"
+#include "ProgressBar.h"
 #include "TypeInfo.h"
 #include "StringInfo.h"
 #include "StrUtils.hpp"
@@ -24,6 +25,7 @@
 #include "AboutDlg.h"
 #include "Legend.h"
 #include "IDCGen.h"
+#include "IdcSplitSize.h"
 #include "Decompiler.h"
 #include "Hex2Double.h"
 #include "Plugins.h"
@@ -50,7 +52,7 @@ int         DelphiThemesCount;
 //unsigned long stat_GetClassAdr_calls = 0;
 //unsigned long stat_GetClassAdr_adds = 0;
 //---------------------------------------------------------------------------
-String  IDRVersion = "07.05.2016";
+String  IDRVersion = "12.02.2017"; 
 //---------------------------------------------------------------------------
 SysProcInfo    SysProcs[] = {
     {"@HandleFinally", 0},
@@ -99,6 +101,8 @@ bool            SourceIsLibrary = false;
 bool            ClassTreeDone;
 bool            ProjectModified = false;
 bool            UserKnowledgeBase = false;
+bool            SplitIDC = false;
+int             SplitSize = 0;
 //Common variables
 String          IDPFile;
 int             MaxBufLen;      //Максимальная длина буфера (для загрузки)
@@ -129,20 +133,20 @@ TList           *VmtList;       //VMT list
 //Units
 int             UnitsNum = 0;
 TList           *Units = 0;
-int             UnitSortField = 0; //0 - по адресу, 1 - в порядке инициализации, 2 - по имени
+int             UnitSortField = 0; //0 - by address, 1 - by initialization order, 2 - by name
 //Types
 TList           *OwnTypeList = 0;
-int             RTTISortField = 0; //0 - по адресу, 1 - по виду, 2 - по имени
+int             RTTISortField = 0; //0 - by address, 1 - by initialization order, 2 - by name
 
 DWORD           CurProcAdr;
 int				CurProcSize;
 String          SelectedAsmItem;    //Selected item in Asm Listing
 DWORD           CurUnitAdr;
 DWORD           HInstanceVarAdr;
-DWORD           LastTls;            //Последний занятый индекс Tls, показывает, сколько ThreadVars в программе
+DWORD           LastTls;            //Last bust index Tls shows how many ThreadVars in program
 int             Reserved;
 int             LastResStrNo = 0;   //Last ResourceStringNo
-DWORD			CtdRegAdr;			//Адрес процедуры CtdRegAdr
+DWORD			CtdRegAdr;			//Procedure CtdRegAdr address
 
 int             VmtSelfPtr			 = 0;
 int             VmtIntfTable		 = 0;
@@ -484,16 +488,6 @@ void __fastcall TFMain_11011981::Init()
 
     ClearTreeNodeMap();
     ClearClassAdrMap();
-
-    sb->Parent = lbUnitItems;
-    sb->Align = alBottom;
-    sb->Panels->Items[0]->Width = Width / 2;
-    sb->Panels->Items[0]->Text = "";
-    sb->Panels->Items[1]->Text = "";
-    pb->Parent = lbUnitItems;
-    pb->Align = alTop;
-    pb->Position = 0;
-    pb->Visible = false;
 
     Update();
     Sleep(0);
@@ -1042,6 +1036,9 @@ void __fastcall TFMain_11011981::StrapProc(int pos, int ProcIdx, MProcInfo* Proc
                 {
                     argInfo.Tag = *p; p++;
                     int locflags = *((int*)p); p += 4;
+
+                    if ((locflags & 7) == 1) argInfo.Tag = 0x23;  //Add by ZGL
+                    
                     argInfo.Register = (locflags & 8);
                     //Ndx
                     int ndx = *((int*)p); p += 4;
@@ -2354,9 +2351,8 @@ int __fastcall TFMain_11011981::EstimateProcSize(DWORD fromAdr)
                 if (IsValidCodeAdr(Adr))
                 {
                     if (Adr > lastAdr) lastAdr = Adr;
-                    Pos = Adr2Pos(Adr); assert(Pos >= 0);
-                    int delta = Pos - NPos;
-                    if (delta >= 0)// && delta < outRows)
+                    Pos = Adr2Pos(Adr);
+                    if (Pos >= 0)
                     {
                         if (Code[Pos] == 0xE9) //jmp Handle...
                         {
@@ -2412,9 +2408,9 @@ int __fastcall TFMain_11011981::EstimateProcSize(DWORD fromAdr)
                             }
                         }
                     }
-                    curPos += instrLen; curAdr += instrLen;
-                    continue;
                 }
+                curPos += instrLen; curAdr += instrLen;
+                continue;
             }
         }
 
@@ -3303,61 +3299,62 @@ int __fastcall TFMain_11011981::IsValidCode(DWORD fromAdr)
                 Code[NPos] == 0xC3)
             {
                 Adr = DisInfo.Immediate;      //Adr=@1
-                if (!IsValidCodeAdr(Adr)) return -1;
-                if (Adr > lastAdr) lastAdr = Adr;
-                Pos = Adr2Pos(Adr); assert(Pos >= 0);
-                int delta = Pos - NPos;
-                if (delta >= 0)// && delta < outRows)
+                if (IsValidCodeAdr(Adr))
                 {
-                    if (Code[Pos] == 0xE9) //jmp Handle...
+                    if (Adr > lastAdr) lastAdr = Adr;
+                    Pos = Adr2Pos(Adr);
+                    if (Pos >= 0)
                     {
-                        //Дизассемблируем jmp
-                        instrLen1 = Disasm.Disassemble(Code + Pos, (__int64)Adr, &DisInfo, 0);
-                        //if (!instrLen1) return -1;
-
-                        recN = GetInfoRec(DisInfo.Immediate);
-                        if (recN)
+                        if (Code[Pos] == 0xE9) //jmp Handle...
                         {
-                            if (recN->SameName("@HandleFinally"))
-                            {
-                                //jmp HandleFinally
-                                Pos += instrLen1; Adr += instrLen1;
-                                //jmp @2
-                                instrLen2 = Disasm.Disassemble(Code + Pos, (__int64)Adr, &DisInfo, 0);
-                                Adr += instrLen2;
-                                if (Adr > lastAdr) lastAdr = Adr;
-                                /*
-                                //@2
-                                Adr1 = DisInfo.Immediate - 4;
-                                Adr = *((DWORD*)(Code + Adr2Pos(Adr1)));
-                                if (Adr > lastAdr) lastAdr = Adr;
-                                */
-                            }
-                            else if (recN->SameName("@HandleAnyException") || recN->SameName("@HandleAutoException"))
-                            {
-                                //jmp HandleAnyException
-                                Pos += instrLen1; Adr += instrLen1;
-                                //call DoneExcept
-                                instrLen2 = Disasm.Disassemble(Code + Pos, (__int64)Adr, 0, 0);
-                                Adr += instrLen2;
-                                if (Adr > lastAdr) lastAdr = Adr;
-                            }
-                            else if (recN->SameName("@HandleOnException"))
-                            {
-                                //jmp HandleOnException
-                                Pos += instrLen1; Adr += instrLen1;
-                                //Флажок cfETable, чтобы правильно вывести данные
-                                SetFlag(cfETable, Pos);
-                                //dd num
-                                num = *((int*)(Code + Pos)); Pos += 4;
-                                if (Adr + 4 + 8 * num > lastAdr) lastAdr = Adr + 4 + 8 * num;
+                            //Дизассемблируем jmp
+                            instrLen1 = Disasm.Disassemble(Code + Pos, (__int64)Adr, &DisInfo, 0);
+                            //if (!instrLen1) return -1;
 
-                                for (int k = 0; k < num; k++)
+                            recN = GetInfoRec(DisInfo.Immediate);
+                            if (recN)
+                            {
+                                if (recN->SameName("@HandleFinally"))
                                 {
-                                    //dd offset ExceptionInfo
-                                    Pos += 4;
-                                    //dd offset ExceptionProc
-                                    Pos += 4;
+                                    //jmp HandleFinally
+                                    Pos += instrLen1; Adr += instrLen1;
+                                    //jmp @2
+                                    instrLen2 = Disasm.Disassemble(Code + Pos, (__int64)Adr, &DisInfo, 0);
+                                    Adr += instrLen2;
+                                    if (Adr > lastAdr) lastAdr = Adr;
+                                    /*
+                                    //@2
+                                    Adr1 = DisInfo.Immediate - 4;
+                                    Adr = *((DWORD*)(Code + Adr2Pos(Adr1)));
+                                    if (Adr > lastAdr) lastAdr = Adr;
+                                    */
+                                }
+                                else if (recN->SameName("@HandleAnyException") || recN->SameName("@HandleAutoException"))
+                                {
+                                    //jmp HandleAnyException
+                                    Pos += instrLen1; Adr += instrLen1;
+                                    //call DoneExcept
+                                    instrLen2 = Disasm.Disassemble(Code + Pos, (__int64)Adr, 0, 0);
+                                    Adr += instrLen2;
+                                    if (Adr > lastAdr) lastAdr = Adr;
+                                }
+                                else if (recN->SameName("@HandleOnException"))
+                                {
+                                    //jmp HandleOnException
+                                    Pos += instrLen1; Adr += instrLen1;
+                                    //Флажок cfETable, чтобы правильно вывести данные
+                                    SetFlag(cfETable, Pos);
+                                    //dd num
+                                    num = *((int*)(Code + Pos)); Pos += 4;
+                                    if (Adr + 4 + 8 * num > lastAdr) lastAdr = Adr + 4 + 8 * num;
+
+                                    for (int k = 0; k < num; k++)
+                                    {
+                                        //dd offset ExceptionInfo
+                                        Pos += 4;
+                                        //dd offset ExceptionProc
+                                        Pos += 4;
+                                    }
                                 }
                             }
                         }
@@ -4545,7 +4542,7 @@ PMethodRec __fastcall TFMain_11011981::GetMethodInfo(DWORD adr, char kind, int m
     if (!IsValidCodeAdr(adr)) return 0;
 
     PInfoRec recN = GetInfoRec(adr);
-    if (recN && recN->vmtInfo->methods)
+    if (recN && recN->vmtInfo && recN->vmtInfo->methods)
     {
         for (int n = 0; n < recN->vmtInfo->methods->Count; n++)
         {
@@ -5335,9 +5332,8 @@ void __fastcall TFMain_11011981::ShowCode(DWORD fromAdr, int SelectedIdx, int Xr
                 if (IsValidCodeAdr(Adr))
                 {
                     if (Adr > lastAdr) lastAdr = Adr;
-                    Pos = Adr2Pos(Adr); assert(Pos >= 0);
-                    int delta = Pos - NPos;
-                    if (delta >= 0)// && delta < outRows)
+                    Pos = Adr2Pos(Adr);
+                    if (Pos >= 0)
                     {
                         if (Code[Pos] == 0xE9) //jmp Handle...
                         {
@@ -5392,11 +5388,11 @@ void __fastcall TFMain_11011981::ShowCode(DWORD fromAdr, int SelectedIdx, int Xr
                             }
                         }
                     }
-                    wid = AddAsmLine(curAdr, line, flags); row++;
-                    if (wid > maxwid) maxwid = wid;
-                    curPos += instrLen; curAdr += instrLen;
-                    continue;
                 }
+                wid = AddAsmLine(curAdr, line, flags); row++;
+                if (wid > maxwid) maxwid = wid;
+                curPos += instrLen; curAdr += instrLen;
+                continue;
             }
         }
 
@@ -5733,7 +5729,7 @@ void __fastcall TFMain_11011981::AnalyzeVirtualTable(int Pass, DWORD Adr, const 
             {
                 PInfoRec recN1 = GetInfoRec(pAdr);
                 //Look at parent class methods
-                if (recN1 && recN1->vmtInfo->methods)
+                if (recN1 && recN1->vmtInfo && recN1->vmtInfo->methods)
                 {
                     for (int m = 0; m < recN1->vmtInfo->methods->Count; m++)
                     {
@@ -7411,8 +7407,8 @@ void __fastcall TFMain_11011981::ShowDfm(TDfm* dfm)
         dfm->Open = 2;
         dfm->Form->Show();
 
-        if (!AnalyzeThread)
-            sb->Panels->Items[0]->Text = "Press F11 to open form controls tree";
+        //if (!AnalyzeThread)
+        //    sb->Panels->Items[0]->Text = "Press F11 to open form controls tree";
     }
 }
 //---------------------------------------------------------------------------
@@ -7434,18 +7430,6 @@ void __fastcall TFMain_11011981::lbCodeKeyDown(TObject *Sender,
     	bCodePrevClick(Sender);
         break;
     }
-}
-//---------------------------------------------------------------------------
-void __fastcall TFMain_11011981::StartProgress(String text0, String text1, int steps)
-{
-    pb->Min = 0;
-    pb->Max = steps;
-    pb->Step = 1;
-    pb->Position = 0;
-    sb->Panels->Items[0]->Text = text0;
-    sb->Panels->Items[1]->Text = text1;
-    pb->Update();
-    sb->Update();
 }
 //---------------------------------------------------------------------------
 void __fastcall TFMain_11011981::CleanProject()
@@ -7916,9 +7900,9 @@ void __fastcall TFMain_11011981::miClassTreeBuilderClick(TObject *Sender)
     miCtdPassword->Enabled = false;
     miHex2Double->Enabled = false;
 
-    pb->Visible = true;
+    FProgressBar->Show();
 
-    AnalyzeThread = new TAnalyzeThread(FMain_11011981, false);
+    AnalyzeThread = new TAnalyzeThread(FMain_11011981, FProgressBar, false);
     AnalyzeThread->Resume();
 }
 //---------------------------------------------------------------------------
@@ -7972,7 +7956,7 @@ void __fastcall TFMain_11011981::IniFileRead()
         pos = str.LastDelimiter(",");
         if (pos)
         {
-            filename = str.SubString(1, pos - 1);
+            filename = str.SubString(2, pos - 3);   //Modified by ZGL
             version = str.SubString(pos + 1, str.Length() - pos).ToInt();
         }
         else
@@ -8398,9 +8382,9 @@ void __fastcall TFMain_11011981::LoadDelphiFile1(String FileName, int version, b
     miSaveDelphiProject->Enabled = false;
     lbCXrefs->Enabled = false;
 
-    pb->Visible = true;
+    FProgressBar->Show();
 
-    AnalyzeThread = new TAnalyzeThread(FMain_11011981, true);
+    AnalyzeThread = new TAnalyzeThread(FMain_11011981, FProgressBar, true);
     AnalyzeThread->Resume();
 
     WrkDir = ExtractFileDir(FileName);
@@ -8421,11 +8405,8 @@ void __fastcall TFMain_11011981::AnalyzeThreadDone(TObject* Sender)
         AddExe2MRF(SourceFile);
     }
 
-    pb->Position = 0;
-    pb->Visible = false;
-    sb->Panels->Items[0]->Text = "Completed!";
-    sb->Panels->Items[1]->Text = "";
-    //Восстанавливаем пункты меню
+    FProgressBar->Close();
+    //Restore menu items
     miLoadFile->Enabled = true;
     miOpenProject->Enabled = true;
     miMRF->Enabled = true;
@@ -8451,6 +8432,36 @@ void __fastcall TFMain_11011981::AnalyzeThreadDone(TObject* Sender)
 
     delete AnalyzeThread;
     AnalyzeThread = 0;
+}
+//---------------------------------------------------------------------------
+bool __fastcall TFMain_11011981::ImportsValid(DWORD ImpRVA, DWORD ImpSize)
+{
+    if (ImpRVA || ImpSize)
+    {
+        DWORD EntryRVA = ImpRVA;
+        DWORD EndRVA = ImpRVA + ImpSize;
+        IMAGE_IMPORT_DESCRIPTOR ImportDescriptor;
+
+        while (1)
+        {
+            memmove(&ImportDescriptor, (Image + Adr2Pos(EntryRVA + ImageBase)), sizeof(IMAGE_IMPORT_DESCRIPTOR));
+
+            if (!ImportDescriptor.OriginalFirstThunk &&
+                !ImportDescriptor.TimeDateStamp &&
+                !ImportDescriptor.ForwarderChain &&
+                !ImportDescriptor.Name &&
+                !ImportDescriptor.FirstThunk) break;
+
+            if (!IsValidImageAdr(ImportDescriptor.Name + ImageBase)) return false;
+            int NameLength = strlen((char*)(Image + Adr2Pos(ImportDescriptor.Name + ImageBase)));
+            if (NameLength < 0 || NameLength > 256) return false;
+            if (!IsValidModuleName(NameLength, Adr2Pos(ImportDescriptor.Name + ImageBase))) return false;
+
+            EntryRVA += sizeof(IMAGE_IMPORT_DESCRIPTOR);
+            if (EntryRVA >= EndRVA) break;
+        }
+    }
+    return true;
 }
 //---------------------------------------------------------------------------
 int __fastcall TFMain_11011981::LoadImage(FILE* f, bool loadExp, bool loadImp)
@@ -8486,7 +8497,7 @@ int __fastcall TFMain_11011981::LoadImage(FILE* f, bool loadExp, bool loadImp)
     if (NTHeaders.FileHeader.SizeOfOptionalHeader < sizeof(IMAGE_OPTIONAL_HEADER) ||
         NTHeaders.OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR32_MAGIC)
     {
-        ShowMessage("File is invalid PE-executable");
+        ShowMessage("File is invalid 32-bit PE-executable");
         return 0;
     }
     //IDD_ERR_INVALID_PE_EXECUTABLE
@@ -8584,6 +8595,15 @@ int __fastcall TFMain_11011981::LoadImage(FILE* f, bool loadExp, bool loadImp)
     CodeBase = ImageBase + SectionHeaders[0].VirtualAddress;
 
     DWORD evalInitTable = EvaluateInitTable(Image, TotalSize, CodeBase);
+    if (!evalInitTable)
+    {
+        ShowMessage("Cannot find initialization table");
+        delete[] SectionHeaders;
+        delete[] Image;
+        Image = 0;
+        return 0;
+    }
+
     DWORD evalEP = 0;
     //Find instruction mov eax,offset InitTable
     for (n = 0; n < TotalSize - 5; n++)
@@ -8597,7 +8617,7 @@ int __fastcall TFMain_11011981::LoadImage(FILE* f, bool loadExp, bool loadImp)
     //Scan up until bytes 0x55 (push ebp) and 0x8B,0xEC (mov ebp,esp)
     if (evalEP)
     {
-        while (evalEP >= 0)
+        while (evalEP != 0)
         {
             if (Image[evalEP] == 0x55 && Image[evalEP + 1] == 0x8B && Image[evalEP + 2] == 0xEC)
                 break;
@@ -8701,35 +8721,38 @@ int __fastcall TFMain_11011981::LoadImage(FILE* f, bool loadExp, bool loadImp)
             ExpFuncList->Sort(ExportsCmpFunction);
         }
     }
-    if (loadImp)
+
+    DWORD	ImpRVA = NTHeaders.OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress;
+    DWORD	ImpSize = NTHeaders.OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].Size;
+
+    if (loadImp && (ImpRVA || ImpSize))
     {
-        //Load Imports
-        DWORD	EntryRVA = 0;		//next import decriptor RVA
-        DWORD	ImpRVA = 0;			//import directory RVA
-        DWORD	ImpSize = 0;		//import directory size
-        DWORD	ThunkRVA = 0;		//RVA очередного thunk'a (через FirstThunk)
-        DWORD	LookupRVA = 0;		//RVA очередного thunk'a (через OriginalFirstTunk или FirstThunk)
-        DWORD	ThunkValue = 0;		//значение очередного thunk'a (через OriginalFirstTunk или FirstThunk)
-
-        WORD	Hint = 0;			//Ординал или хинт импортируемого символа
-
-        IMAGE_IMPORT_DESCRIPTOR ImportDescriptor;
-
-        //DWORD fnProc = 0;
-
-        ImpRVA = NTHeaders.OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress;
-        ImpSize = NTHeaders.OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].Size;
-
-        if (ImpRVA || ImpSize)
+        if (!ImportsValid(ImpRVA, ImpSize))
         {
-            // На первый import descriptor
+            ShowMessage("Imports not valid, will skip!");
+        }
+        else
+        {
+            //Load Imports
+            DWORD	EntryRVA;		//Next import decriptor RVA
+            DWORD   EndRVA;         //End of imports
+            DWORD	ThunkRVA;		//RVA of next thunk (from FirstThunk)
+            DWORD	LookupRVA;		//RVA of next thunk (from OriginalFirstTunk or FirstThunk)
+            DWORD	ThunkValue;		//Value of next thunk (from OriginalFirstTunk or FirstThunk)
+            WORD	Hint;			//Ordinal or hint of imported symbol
+
+            IMAGE_IMPORT_DESCRIPTOR ImportDescriptor;
+
+            //DWORD fnProc = 0;
+
+            //First import descriptor
             EntryRVA = ImpRVA;
+            EndRVA = ImpRVA + ImpSize;
 
             while (1)
             {
                 memmove(&ImportDescriptor, (Image + Adr2Pos(EntryRVA + ImageBase)), sizeof(IMAGE_IMPORT_DESCRIPTOR));
-                // Если все поля дескриптора нулевые, значит список кончился
-                // Выходим из цикла
+                //All descriptor fields are NULL - end of list, break
                 if (!ImportDescriptor.OriginalFirstThunk &&
                     !ImportDescriptor.TimeDateStamp &&
                     !ImportDescriptor.ForwarderChain &&
@@ -8750,20 +8773,18 @@ int __fastcall TFMain_11011981::LoadImage(FILE* f, bool loadExp, bool loadImp)
 
                 //HINSTANCE hLib = LoadLibraryEx(moduleName.c_str(), 0, LOAD_LIBRARY_AS_DATAFILE);
 
-                // Определяем, откуда будем брать имена импортов:
-                // из OriginalFirstThunk или FirstThunk
+                //Define the source of import names (OriginalFirstThunk or FirstThunk)
                 if (ImportDescriptor.OriginalFirstThunk)
                     LookupRVA = ImportDescriptor.OriginalFirstThunk;
                 else
                     LookupRVA = ImportDescriptor.FirstThunk;
 
-                // Thunk'и с адресами берем всегда из FirstThunk
+                // ThunkRVA get from FirstThunk always
                 ThunkRVA = ImportDescriptor.FirstThunk;
                 //Get Imported Functions
                 while (1)
                 {
-                    // Имена или ординалы берем из LookupTable (которая может быть
-                    // как в OriginalFirstThunk, так и в FirstThunk)
+                    //Names or ordinals get from LookupTable (this table can be inside OriginalFirstThunk or FirstThunk)
                     ThunkValue = *((DWORD*)(Image + Adr2Pos(LookupRVA + ImageBase)));
                     if (!ThunkValue) break;
 
@@ -8772,12 +8793,12 @@ int __fastcall TFMain_11011981::LoadImage(FILE* f, bool loadExp, bool loadImp)
 
                     if (ThunkValue & 0x80000000)
                     {
-                        // by ordinal
+                        //By ordinal
                         Hint = (WORD)(ThunkValue & 0xFFFF);
 
                         //if (hLib) fnProc = (DWORD)GetProcAddress(hLib, (char*)Hint);
 
-                        // Но адреса используем только из FirstThunk
+                        //Addresse get from FirstThunk only
                         //recI->name = modName + "." + String(Hint);
                         recI->name = String(Hint);
                     }
@@ -8808,6 +8829,7 @@ int __fastcall TFMain_11011981::LoadImage(FILE* f, bool loadExp, bool loadImp)
                     LookupRVA += 4;
                 }
                 EntryRVA += sizeof(IMAGE_IMPORT_DESCRIPTOR);
+                if (EntryRVA >= EndRVA) break;
 
                 //if (hLib)
                 //{
@@ -8882,7 +8904,7 @@ void __fastcall TFMain_11011981::ReadNode(TStream* stream, TTreeNode* node, char
     stream->Read(&len, sizeof(len));
     stream->Read(buf, len);
     node->Text = String(buf, len);
-    pb->StepIt();
+    FProgressBar->pb->StepIt();
 
     for (int n = 0; n < itemsCount; n++)
     {
@@ -8904,7 +8926,7 @@ void __fastcall TFMain_11011981::OpenProject(String FileName)
 
     Screen->Cursor = crHourGlass;
     FILE* projectFile = fopen(FileName.c_str(), "rb");
-    //Читаем версию Дельфи и максимальную длину буфера
+    //Read Delphi version and maximum length of buffer
     fseek(projectFile, 12, SEEK_SET);
     fread(&_ver, sizeof(_ver), 1, projectFile);
 
@@ -8946,7 +8968,7 @@ void __fastcall TFMain_11011981::OpenProject(String FileName)
 
     SetVmtConsts(DelphiVersion);
 
-    //На время загрузки проекта отключаем пункты меню
+    //Disable menu items
     miLoadFile->Enabled = false;
     miOpenProject->Enabled = false;
     miMRF->Enabled = false;
@@ -8954,11 +8976,10 @@ void __fastcall TFMain_11011981::OpenProject(String FileName)
     miSaveDelphiProject->Enabled = false;
     lbCXrefs->Enabled = false;
 
-    pb->Visible = true;
     Update();
 
     char* buf = new BYTE[MaxBufLen];
-    TMemoryStream* inStream = new TMemoryStream();//new TFileStream(IDPFile, fmOpenRead);
+    TMemoryStream* inStream = new TMemoryStream();
     inStream->LoadFromFile(IDPFile);
 
     char magic[12];
@@ -9023,16 +9044,9 @@ void __fastcall TFMain_11011981::OpenProject(String FileName)
     memset((void*)Infos, 0, sizeof(PInfoRec)*TotalSize);
 
     inStream->Read(&infosCnt, sizeof(infosCnt));
-    StartProgress("Reading Infos Objects (number = "+String(infosCnt)+")...", "", TotalSize / 4096);
     BYTE kind;
     for (n = 0; n < TotalSize; n++)
     {
-        if ((n & 4095) == 0)
-        {
-            pb->StepIt();
-            Application->ProcessMessages();
-        }
-
         inStream->Read(&pos, sizeof(pos));
         if (pos == -1) break;
         inStream->Read(&kind, sizeof(kind));
@@ -9058,13 +9072,10 @@ void __fastcall TFMain_11011981::OpenProject(String FileName)
 
     //Units
     inStream->Read(&num, sizeof(num));
-    StartProgress("Reading Units (number = "+String(num)+")...", "", num);
 
     UnitsNum = num;
     for (n = 0; n < UnitsNum; n++)
     {
-        pb->StepIt();
-        Application->ProcessMessages();
         PUnitRec recU = new UnitRec;
         inStream->Read(&recU->trivial, sizeof(recU->trivial));
         inStream->Read(&recU->trivialIni, sizeof(recU->trivialIni));
@@ -9330,13 +9341,11 @@ void __fastcall TFMain_11011981::OpenProject(String FileName)
     Update();
 
     //Class Viewer
-    //Total nodes num (for progress)
+    //Total nodes num (for progress bar)
     int nodesNum;
     inStream->Read(&nodesNum, sizeof(nodesNum));
     if (nodesNum)
     {
-        StartProgress("Reading ClassViewer Tree Nodes (number = "+String(nodesNum)+")...", "", nodesNum);
-
         tvClassesFull->Items->BeginUpdate();
         TTreeNode* root = tvClassesFull->Items->Add(0, "");
         ReadNode(inStream, root, buf);
@@ -9366,7 +9375,7 @@ void __fastcall TFMain_11011981::OpenProject(String FileName)
     }
     miClassTreeBuilder->Enabled = true;
 
-    //Для проверки
+    //Just cheking
     inStream->Read(&MaxBufLen, sizeof(MaxBufLen));
 
     if (buf) delete[] buf;
@@ -9377,11 +9386,7 @@ void __fastcall TFMain_11011981::OpenProject(String FileName)
 
     AddIdp2MRF(FileName);
 
-    pb->Position = 0;
-    pb->Visible = false;
-    sb->Panels->Items[0]->Text = "";
-    sb->Panels->Items[1]->Text = "";
-    //Восстанавливаем пункты меню
+    //Enable lemu items
     miLoadFile->Enabled = true;
     miOpenProject->Enabled = true;
     miMRF->Enabled = true;
@@ -9506,7 +9511,7 @@ void __fastcall TFMain_11011981::WriteNode(TStream* stream, TTreeNode* node)
     //Count
     int itemsCount = node->Count;
     stream->Write(&itemsCount, sizeof(itemsCount));
-    pb->StepIt();
+    FProgressBar->pb->StepIt();
 
     //Text
     int len = node->Text.Length(); if (len > MaxBufLen) MaxBufLen = len;
@@ -9538,7 +9543,7 @@ void __fastcall TFMain_11011981::SaveProject(String FileName)
     {
         outStream = new TMemoryStream();
 
-        pb->Visible = true;
+        FProgressBar->Show();
 
         char* magic = "IDR proj v.3";
         outStream->Write(magic, 12);
@@ -9574,10 +9579,10 @@ void __fastcall TFMain_11011981::SaveProject(String FileName)
 
         DWORD Items = TotalSize;
         BYTE *pImage = Image;
-        StartProgress("Writing Image...", "", (Items + MAX_ITEMS - 1)/MAX_ITEMS);
+        FProgressBar->StartProgress("Writing Image...", "", (Items + MAX_ITEMS - 1)/MAX_ITEMS);
         while (Items >= MAX_ITEMS)
         {
-            pb->StepIt();
+            FProgressBar->pb->StepIt();
             outStream->Write(pImage, MAX_ITEMS);
             pImage += MAX_ITEMS;
             Items -= MAX_ITEMS;
@@ -9586,10 +9591,10 @@ void __fastcall TFMain_11011981::SaveProject(String FileName)
 
         Items = TotalSize;
         DWORD *pFlags = Flags;
-        StartProgress("Writing Flags...", "", (Items + MAX_ITEMS - 1)/MAX_ITEMS);
+        FProgressBar->StartProgress("Writing Flags...", "", (Items + MAX_ITEMS - 1)/MAX_ITEMS);
         while (Items >= MAX_ITEMS)
         {
-            pb->StepIt();
+            FProgressBar->pb->StepIt();
             outStream->Write(pFlags, sizeof(DWORD)*MAX_ITEMS);
             pFlags += MAX_ITEMS;
             Items -= MAX_ITEMS;
@@ -9604,7 +9609,7 @@ void __fastcall TFMain_11011981::SaveProject(String FileName)
         }
         outStream->Write(&infosCnt, sizeof(infosCnt));
 
-        StartProgress("Writing Infos Objects (number = " + String(infosCnt) + ")...", "", TotalSize / 4096);
+        FProgressBar->StartProgress("Writing Infos Objects (number = " + String(infosCnt) + ")...", "", TotalSize / 4096);
         MaxBufLen = 0;
         BYTE kind;
         try
@@ -9613,7 +9618,7 @@ void __fastcall TFMain_11011981::SaveProject(String FileName)
             {
                 if ((n & 4095) == 0)
                 {
-                    pb->StepIt();
+                    FProgressBar->pb->StepIt();
                     Application->ProcessMessages();
                 }
 
@@ -9654,11 +9659,11 @@ void __fastcall TFMain_11011981::SaveProject(String FileName)
 
         //Units
         num = UnitsNum;
-        StartProgress("Writing Units (number = "+String(num)+")...", "", num);
+        FProgressBar->StartProgress("Writing Units (number = "+String(num)+")...", "", num);
         outStream->Write(&num, sizeof(num));
         for (n = 0; n < num; n++)
         {
-            pb->StepIt();
+            FProgressBar->pb->StepIt();
             Application->ProcessMessages();
             PUnitRec recU = (PUnitRec)Units->Items[n];
             outStream->Write(&recU->trivial, sizeof(recU->trivial));
@@ -9701,11 +9706,11 @@ void __fastcall TFMain_11011981::SaveProject(String FileName)
 
         //Types
         num = OwnTypeList->Count;
-        StartProgress("Writing Types (number = "+String(num)+")...", "", num);
+        FProgressBar->StartProgress("Writing Types (number = "+String(num)+")...", "", num);
         outStream->Write(&num, sizeof(num));
         for (n = 0; n < num; n++)
         {
-            pb->StepIt();
+            FProgressBar->pb->StepIt();
             Application->ProcessMessages();
             PTypeRec recT = (PTypeRec)OwnTypeList->Items[n];
             outStream->Write(&recT->kind, sizeof(recT->kind));
@@ -9718,11 +9723,11 @@ void __fastcall TFMain_11011981::SaveProject(String FileName)
 
         //Forms
         num = ResInfo->FormList->Count;
-        StartProgress("Writing Forms (number = "+String(num)+")...", "", num);
+        FProgressBar->StartProgress("Writing Forms (number = "+String(num)+")...", "", num);
         outStream->Write(&num, sizeof(num));
         for (n = 0; n < num; n++)
         {
-            pb->StepIt();
+            FProgressBar->pb->StepIt();
             Application->ProcessMessages();
             TDfm* dfm = (TDfm*)ResInfo->FormList->Items[n];
             //Flags
@@ -9806,11 +9811,11 @@ void __fastcall TFMain_11011981::SaveProject(String FileName)
         }
         //Aliases
         num = ResInfo->Aliases->Count;
-        StartProgress("Writing Aliases  (number = "+String(num)+")...", "", num);
+        FProgressBar->StartProgress("Writing Aliases  (number = "+String(num)+")...", "", num);
         outStream->Write(&num, sizeof(num));
         for (n = 0; n < num; n++)
         {
-            pb->StepIt();
+            FProgressBar->pb->StepIt();
             Application->ProcessMessages();
             len = ResInfo->Aliases->Strings[n].Length(); if (len > MaxBufLen) MaxBufLen = len;
             outStream->Write(&len, sizeof(len));
@@ -9822,10 +9827,10 @@ void __fastcall TFMain_11011981::SaveProject(String FileName)
         outStream->Write(&CodeHistoryPtr, sizeof(CodeHistoryPtr));
         outStream->Write(&CodeHistoryMax, sizeof(CodeHistoryMax));
         PROCHISTORYREC phRec;
-        StartProgress("Writing Code History Items (number = "+String(CodeHistorySize)+")...", "", CodeHistorySize);
+        FProgressBar->StartProgress("Writing Code History Items (number = "+String(CodeHistorySize)+")...", "", CodeHistorySize);
         for (n = 0; n < CodeHistorySize; n++)
         {
-            pb->StepIt();
+            FProgressBar->pb->StepIt();
             Application->ProcessMessages();
             outStream->Write(&CodeHistory[n], sizeof(PROCHISTORYREC));
         }
@@ -9843,18 +9848,21 @@ void __fastcall TFMain_11011981::SaveProject(String FileName)
 
         outStream->Write(&CtdRegAdr, sizeof(CtdRegAdr));
 
+        FProgressBar->Close();
         //Class Viewer
         //Total nodes (for progress)
         num = 0; if (ClassTreeDone) num = tvClassesFull->Items->Count;
         if (num && Application->MessageBox("Save full Tree of Classes?", "Warning", MB_YESNO) == IDYES)
         {
+            FProgressBar->Show();
             outStream->Write(&num, sizeof(num));
             if (num)
             {
-                StartProgress("Writing ClassViewer Tree Nodes (number = "+String(num)+")...", "", num);
+                FProgressBar->StartProgress("Writing ClassViewer Tree Nodes (number = "+String(num)+")...", "", num);
                 TTreeNode* root = tvClassesFull->Items->GetFirstNode();
                 WriteNode(outStream, root);
             }
+            FProgressBar->Close();
         }
         else
         {
@@ -9869,11 +9877,6 @@ void __fastcall TFMain_11011981::SaveProject(String FileName)
         ProjectModified = false;
 
         AddIdp2MRF(FileName);
-
-        pb->Position = 0;
-        pb->Visible = false;
-        sb->Panels->Items[0]->Text = "";
-        sb->Panels->Items[1]->Text = "";
     }
     catch (EFCreateError &E)
     {
@@ -10173,14 +10176,16 @@ void __fastcall TFMain_11011981::miMapGeneratorClick(TObject *Sender)
                             procName = recN->MakeMapName(adr);
 
                         fprintf(fMap, " 0001:%08X       %s.%s\n", n, moduleName.c_str(), procName.c_str());
-                        fprintf(fMap, "%lX %s\n", adr, recN->MakePrototype(adr, true, true, false, true, false).c_str());
                     }
                     else
                     {
                         procName = recN->MakeMapName(adr);
                         fprintf(fMap, " 0001:%08X       %s\n", n, procName.c_str());
-                        fprintf(fMap, "%lX %s\n", adr, recN->MakePrototype(adr, true, true, false, true, false).c_str());
                     }
+                    //if (!IsFlagSet(cfImport, n))
+                    //{
+                    //    fprintf(fMap, "%lX %s\n", adr, recN->MakePrototype(adr, true, true, false, true, false).c_str());
+                    //}
                 }
                 else
                 {
@@ -10280,34 +10285,61 @@ void __fastcall TFMain_11011981::miCommentsGeneratorClick(TObject *Sender)
 //---------------------------------------------------------------------------
 void __fastcall TFMain_11011981::miIDCGeneratorClick(TObject *Sender)
 {
-    String idcName = "";
-    if (SourceFile != "") idcName = ChangeFileExt(SourceFile, ".idc");
-    if (IDPFile != "") idcName = ChangeFileExt(IDPFile, ".idc");
+    String idcName = "", idcTemplate = "";
+    if (SourceFile != "")
+    {
+        idcName = ChangeFileExt(SourceFile, ".idc");
+        idcTemplate = ChangeFileExt(SourceFile, "");
+    }
+    if (IDPFile != "")
+    {
+        idcName = ChangeFileExt(IDPFile, ".idc");
+        idcTemplate = ChangeFileExt(IDPFile, "");
+    }
 
-    SaveDlg->InitialDir = WrkDir;
-    SaveDlg->Filter = "IDC|*.idc";
-    SaveDlg->FileName = idcName;
+    TSaveIDCDialog* SaveIDCDialog = new TSaveIDCDialog(this, "SAVEIDCDLG");
+    SaveIDCDialog->InitialDir = WrkDir;
+    SaveIDCDialog->Filter = "IDC|*.idc";
+    SaveIDCDialog->FileName = idcName;
+ 
+    if (!SaveIDCDialog->Execute()) return;
 
-    if (!SaveDlg->Execute()) return;
-
-    idcName = SaveDlg->FileName;
+    idcName = SaveIDCDialog->FileName;
+    delete SaveIDCDialog;
 
     if (FileExists(idcName))
     {
         if (Application->MessageBox("File already exists. Overwrite?", "Warning", MB_YESNO) == IDNO) return;
     }
 
+    if (SplitIDC)
+    {
+        if (FIdcSplitSize->ShowModal() == mrCancel) return;
+    }
+
 	Screen->Cursor = crHourGlass;
 
     FILE* idcF = fopen(idcName.c_str(), "wt+");
-    TIDCGen *idcGen = new TIDCGen(idcF);
+    TIDCGen *idcGen = new TIDCGen(idcF, SplitSize);
 
-    idcGen->OutputHeader();
+    idcGen->OutputHeaderFull();
 
-    for (int pos = 0; pos < TotalSize; pos++)
+    int     pos, curSize;
+
+    for (pos = 0, curSize = 0; pos < TotalSize; pos++)
     {
         PInfoRec recN = GetInfoRec(Pos2Adr(pos));
         if (!recN) continue;
+
+        if (SplitIDC && idcGen->CurrentBytes >= SplitSize)
+        {
+            fprintf(idcF, "}");
+            fclose(idcF);
+            idcName = idcTemplate + "_" + idcGen->CurrentPartNo + ".idc";
+            idcF = fopen(idcName.c_str(), "wt+");
+            idcGen->NewIDCPart(idcF);
+            idcGen->OutputHeaderShort();
+        }
 
         BYTE kind = recN->kind;
         BYTE len;
@@ -11169,9 +11201,8 @@ void __fastcall TFMain_11011981::OutputCode(FILE* outF, DWORD fromAdr, String pr
                 if (IsValidCodeAdr(Adr))
                 {
                     if (Adr > lastAdr) lastAdr = Adr;
-                    Pos = Adr2Pos(Adr); assert(Pos >= 0);
-                    int delta = Pos - NPos;
-                    if (delta >= 0)// && delta < outRows)
+                    Pos = Adr2Pos(Adr);
+                    if (Pos >= 0)
                     {
                         if (Code[Pos] == 0xE9) //jmp Handle...
                         {
@@ -11226,10 +11257,10 @@ void __fastcall TFMain_11011981::OutputCode(FILE* outF, DWORD fromAdr, String pr
                             }
                         }
                     }
-                    OutputLine(outF, flags, curAdr, line); row++;
-                    curPos += instrLen; curAdr += instrLen;
-                    continue;
                 }
+                OutputLine(outF, flags, curAdr, line); row++;
+                curPos += instrLen; curAdr += instrLen;
+                continue;
             }
         }
 
@@ -11359,7 +11390,7 @@ void __fastcall TFMain_11011981::wm_dropFiles(TWMDropFiles& msg)
             else if ((SameText(ext, ".exe") || SameText(ext, ".bpl") || SameText(ext, ".dll") || SameText(ext, ".scr")) && miLoadFile->Enabled)
                 DoOpenDelphiFile(DELHPI_VERSION_AUTO, droppedFile, true, true);
 
-            //обработали 1й - и валим - пока не умеем > 1 файла одновременно
+            //Processed the first - and go out - we cannot process more than one file yet
             break;
         }
         //TPoint ptDrop = fc->DropPoint;
@@ -11396,13 +11427,23 @@ void __fastcall TFMain_11011981::FormCloseQuery(TObject *Sender, bool &CanClose)
 
     if (AnalyzeThread)
     {
+        AnalyzeThread->Suspend();
+        String sbtext0 = FProgressBar->sb->Panels->Items[0]->Text;
+        String sbtext1 = FProgressBar->sb->Panels->Items[1]->Text;
+        FProgressBar->Visible = false;
+
         _res = Application->MessageBox("Analysis is not yet completed. Do You really want to exit IDR?", "Confirmation", MB_YESNO);
     	if (_res == IDNO)
         {
+            FProgressBar->Visible = true;
+            FProgressBar->sb->Panels->Items[0]->Text = sbtext0;
+            FProgressBar->sb->Panels->Items[1]->Text = sbtext1;
+            FProgressBar->Update();
+
+            AnalyzeThread->Resume();
         	CanClose = false;
             return;
         }
-
         AnalyzeThread->Terminate();
     }
 
@@ -11481,7 +11522,6 @@ void __fastcall TFMain_11011981::miCtdPasswordClick(TObject *Sender)
     {
         pwds += Val2Str2(pwd[n]);
     }
-    //sb->Panels->Items[1]->Text = pwds;
     */
 	PROCHISTORYREC  rec;
 
@@ -11532,7 +11572,7 @@ PFIELDINFO __fastcall TFMain_11011981::GetField(String TypeName, int Offset, boo
         if (classAdr)
         {
             PInfoRec recN = GetInfoRec(classAdr);
-            if (recN && recN->vmtInfo->fields)
+            if (recN && recN->vmtInfo && recN->vmtInfo->fields)
             {
                 if (recN->vmtInfo->fields->Count == 1)
                 {
@@ -11648,6 +11688,7 @@ PFIELDINFO __fastcall TFMain_11011981::AddField(DWORD ProcAdr, int ProcOfs, Stri
         {
             PInfoRec recN = GetInfoRec(classAdr);
             if (!recN) return 0;
+            if (!recN->vmtInfo) return 0;
             return recN->vmtInfo->AddField(ProcAdr, ProcOfs, Scope, Offset, Case, Name, Type);
         }
     }
@@ -11915,41 +11956,7 @@ void __fastcall TFMain_11011981::miCopyListClick(TObject *Sender)
 //---------------------------------------------------------------------------
 void __fastcall TFMain_11011981::wm_updAnalysisStatus(TMessage& msg)
 {
-    if (taStartPrBar == msg.WParam)
-    {
-        const ThreadAnalysisData* startOperation = (ThreadAnalysisData*)msg.LParam;
-        pb->Min = 0;
-        pb->Max = startOperation ? startOperation->pbSteps : 0;
-        pb->Step = 1;
-        pb->Position = 0;
-        sb->Panels->Items[0]->Text = startOperation ? startOperation->sbText : String("?");
-        sb->Panels->Items[1]->Text = "";
-        sb->Refresh();
-
-        if (startOperation) delete startOperation;
-    }
-    else if (taUpdatePrBar == msg.WParam)
-    {
-        pb->StepIt();
-    }
-    else if (taStopPrBar == msg.WParam)
-    {
-        pb->Position = 0;
-        sb->Panels->Items[0]->Text = "";
-        sb->Panels->Items[1]->Text = "";
-        sb->Refresh();
-    }
-    else if (taUpdateStBar == msg.WParam)
-    {
-        const ThreadAnalysisData* updStatusBar = (ThreadAnalysisData*)msg.LParam;
-        sb->Panels->Items[1]->Text = updStatusBar ? updStatusBar->sbText : String("?");
-        sb->Invalidate();
-
-        if (updStatusBar) delete updStatusBar;
-
-        Application->ProcessMessages();
-    }
-    else if (taUpdateUnits == msg.WParam)
+    if (taUpdateUnits == msg.WParam)
     {
         const long isLastStep = msg.LParam;
         tsUnits->Enabled = true;
@@ -12045,8 +12052,6 @@ void __fastcall TFMain_11011981::wm_updAnalysisStatus(TMessage& msg)
 //---------------------------------------------------------------------------
 void __fastcall TFMain_11011981::wm_dfmClosed(TMessage& msg)
 {
-    if (!AnalyzeThread)
-        sb->Panels->Items[0]->Text = "";
 }
 //---------------------------------------------------------------------------
 //Fill ClassViewerTree for 1 class

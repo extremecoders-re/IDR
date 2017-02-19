@@ -25,6 +25,7 @@
 #define     IF_INTVAL           256
 #define     IF_INTERFACE        512
 #define     IF_EXTERN_VAR       1024    //User for embedded procedures
+#define     IF_RECORD_FOFS      2048    //Offset inside record
 
 #define     CF_CONSTRUCTOR      1
 #define     CF_DESTRUCTOR       2
@@ -217,7 +218,7 @@ public:
     String __fastcall GetFieldName(PFIELDINFO fInfo);
     String __fastcall GetArgName(PARGINFO argInfo);
     String __fastcall GetGvarName(DWORD adr);
-    String __fastcall GetLvarName(int Ofs);
+    String __fastcall GetLvarName(int Ofs, String Type);
     void __fastcall AssignItem(PITEM DstItem, PITEM SrcItem);
     void __fastcall AddToBody(String src);
     void __fastcall AddToBody(TStringList* src);
@@ -272,6 +273,7 @@ public:
     PITEM __fastcall FPop();
     void __fastcall FPush(PITEM val);
     void __fastcall FSet(int idx, PITEM val);
+    void __fastcall FXch(int idx1, int idx2);
     PFIELDINFO __fastcall GetArrayFieldOffset(String ATypeName, int AFromOfs, int AScale);
     int __fastcall GetCmpInfo(DWORD fromAdr);
     String __fastcall GetCycleFrom();
@@ -307,7 +309,7 @@ public:
     void __fastcall SimulateInstr2MemReg(DWORD curAdr, BYTE Op);
     void __fastcall SimulateInstr3(DWORD curAdr, BYTE Op);
     void __fastcall SimulatePop(DWORD curAdr);
-    void __fastcall SimulatePush(DWORD curAdr);
+    void __fastcall SimulatePush(DWORD curAdr, bool bShowComment);
     bool __fastcall SimulateSysCall(String name, DWORD procAdr, int instrLen);
     int __fastcall AnalyzeConditions(int brType, DWORD curAdr, DWORD sAdr, DWORD jAdr, PLoopInfo loopInfo);
 };
